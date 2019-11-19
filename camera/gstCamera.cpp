@@ -43,7 +43,7 @@ const char* gstCameraSrcToString( gstCameraSrc src )
 	if( src == GST_SOURCE_NVCAMERA )		return "GST_SOURCE_NVCAMERA";
 	else if( src == GST_SOURCE_NVARGUS )	return "GST_SOURCE_NVARGUS";
 	else if( src == GST_SOURCE_V4L2 )		return "GST_SOURCE_V4L2";
-
+	else if( src == GST_SOURCE_RTSP )		return "GST_SOURCE_RTSP";
 	return "UNKNOWN";
 }
 
@@ -263,7 +263,7 @@ bool gstCamera::ConvertRGBA( void* input, float** output, bool zeroCopy )
 		mRGBAZeroCopy = zeroCopy;
 	}
 	
-	if( csiCamera() )
+	if( csiCamera() || rtspCamera() )
 	{
 		// MIPI CSI camera is NV12
 		if( CUDA_FAILED(cudaNV12ToRGBA32((uint8_t*)input, (float4*)mRGBA[mLatestRGBA], mWidth, mHeight)) )
@@ -423,8 +423,7 @@ bool gstCamera::buildLaunchStr( gstCameraSrc src )
 		
 		ss << "video/x-raw ! appsink name=mysink";
 	}
-	else
-	{
+	else if ( src == GST_SOURCE_V4L2 ) {
 		ss << "v4l2src device=" << mCameraStr << " ! ";
 		ss << "video/x-raw, width=(int)" << mWidth << ", height=(int)" << mHeight << ", "; 
 		
@@ -437,6 +436,15 @@ bool gstCamera::buildLaunchStr( gstCameraSrc src )
 		ss << "appsink name=mysink";
 
 		mSource = GST_SOURCE_V4L2;
+	}
+	else
+	{
+		// ss << "rtspsrc location=" << mCameraStr << " ! queue ! rtph264depay ! h264parse ! queue ! omxh264dec";
+		// ss << " ! appsink name=mysink";
+		ss << "rtspsrc location=" << mCameraStr << " latency=100 ! rtph264depay ! h264parse ! omxh264dec";
+		ss << " ! nvvidconv ! video/x-raw, width=(int)" << mWidth << ", height=(int)" << mHeight << " ! videoconvert"; 
+		ss << " ! appsink name=mysink";
+		mSource = GST_SOURCE_RTSP;
 	}
 	
 	mLaunchStr = ss.str();
@@ -464,6 +472,8 @@ bool gstCamera::parseCameraStr( const char* camera )
 
 	const size_t prefixLength = strlen(prefixV4L2);
 	const size_t cameraLength = strlen(camera);
+	const char* prefixRTSP = "rtsp://";
+	const size_t prefixRTSPLength = strlen(prefixRTSP);
 
 	if( cameraLength < prefixLength )
 	{
@@ -473,6 +483,10 @@ bool gstCamera::parseCameraStr( const char* camera )
 			return true;
 	}
 	else if( strncmp(camera, prefixV4L2, prefixLength) == 0 )
+	{
+		return true;
+	}
+	else if( strncmp(camera, prefixRTSP, prefixRTSPLength) == 0 )
 	{
 		return true;
 	}
@@ -501,7 +515,17 @@ gstCamera* gstCamera::Create( uint32_t width, uint32_t height, const char* camer
 
 	cam->mWidth      = width;
 	cam->mHeight     = height;
-	cam->mDepth      = cam->csiCamera() ? 12 : 24;	// NV12 or RGB
+
+	const char* prefixRTSP = "rtsp://";
+	const size_t prefixRTSPLength = strlen(prefixRTSP);
+	// NV12 or RGB
+	if (cam->csiCamera() || strncmp(camera, prefixRTSP, prefixRTSPLength) == 0) {
+		printf(LOG_GSTREAMER "mDepth 12\n");
+		cam->mDepth = 12;
+	}
+	else {
+		cam->mDepth = 24;
+	}
 	cam->mSize       = (width * height * cam->mDepth) / 8;
 
 	if( !cam->init(GST_SOURCE_NVARGUS) )
@@ -515,10 +539,14 @@ gstCamera* gstCamera::Create( uint32_t width, uint32_t height, const char* camer
 			if( cam->mSensorCSI >= 0 )
 				cam->mSensorCSI = -1;
 
-			if( !cam->init(GST_SOURCE_V4L2) )
+			if( !cam->init(GST_SOURCE_RTSP) )
 			{
-				printf(LOG_GSTREAMER "failed to init gstCamera (GST_SOURCE_V4L2, camera %s)\n", cam->mCameraStr.c_str());
-				return NULL;
+				printf(LOG_GSTREAMER "failed to init gstCamera (GST_SOURCE_RTSP, camera %s)\n", cam->mCameraStr.c_str());
+				if( !cam->init(GST_SOURCE_V4L2) )
+				{
+					printf(LOG_GSTREAMER "failed to init gstCamera (GST_SOURCE_V4L2, camera %s)\n", cam->mCameraStr.c_str());
+					return NULL;
+				}
 			}
 		}
 	}
